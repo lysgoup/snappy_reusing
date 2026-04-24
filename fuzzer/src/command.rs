@@ -52,6 +52,7 @@ pub struct CommandOpt {
     pub enable_afl: bool,
     pub enable_exploitation: bool,
     pub deterministic_seed: Option<u64>,
+    pub enable_analysis_log: bool,
 }
 
 impl CommandOpt {
@@ -66,6 +67,7 @@ impl CommandOpt {
         enable_afl: bool,
         enable_exploitation: bool,
         deterministic_seed: Option<u64>,
+        enable_analysis_log: bool,
     ) -> Self {
         let mode = InstrumentationMode::from(mode);
 
@@ -133,6 +135,7 @@ impl CommandOpt {
             enable_afl,
             enable_exploitation,
             deterministic_seed,
+            enable_analysis_log,
         }
     }
 

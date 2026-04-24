@@ -83,6 +83,9 @@ fn main() {
              .long("deterministic-seed")
              .help("Random seed that makes the fuzzing run fully deterministic")
              .takes_value(true))
+        .arg(Arg::with_name("enable_analysis_log")
+             .long("enable-analysis-log")
+             .help("Log parent/child input names and mutation type for each new input saved to depot"))
        .get_matches();
 
     fuzz_main(
@@ -99,5 +102,6 @@ fn main() {
         matches.occurrences_of("disable_afl_mutation") == 0,
         matches.occurrences_of("disable_exploitation") == 0,
         value_t!(matches, "deterministic_seed", u64).ok(),
+        matches.occurrences_of("enable_analysis_log") > 0,
     );
 }

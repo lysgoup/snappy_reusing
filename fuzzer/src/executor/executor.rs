@@ -3,7 +3,7 @@ use super::{limit::SetLimit, *};
 use crate::{
     branches, command,
     cond_stmt::{self, NextState},
-    depot, stats, track,
+    depot, fuzz_type::FuzzType, stats, track,
 };
 use angora_common::{config, defs};
 
@@ -42,6 +42,12 @@ pub struct Executor {
     pub has_new_path: bool,
     global_stats: Arc<RwLock<stats::ChartStats>>,
     pub local_stats: stats::LocalStats,
+    // Set in fuzz_loop before each condition's search session; used by analysis logging.
+    pub current_parent_id: usize,
+    pub current_fuzz_type: FuzzType,
+    // Records (child_id, parent_id, fuzz_type) for each new normal input saved.
+    // Populated only when enable_analysis_log is set. Flushed to file by the caller.
+    pub analysis_log: Vec<(usize, usize, FuzzType)>,
 }
 
 impl Executor {
@@ -103,6 +109,9 @@ impl Executor {
             has_new_path: false,
             global_stats,
             local_stats: Default::default(),
+            current_parent_id: 0,
+            current_fuzz_type: FuzzType::default(),
+            analysis_log: Vec::new(),
         }
     }
 
@@ -244,6 +253,11 @@ impl Executor {
             self.has_new_path = true;
             self.local_stats.find_new(&status);
             let id = self.depot.save(status, &buf, cmpid);
+
+            // Record lineage info when analysis logging is enabled.
+            if self.cmd.enable_analysis_log && status == StatusType::Normal {
+                self.analysis_log.push((id, self.current_parent_id, self.current_fuzz_type));
+            }
 
             if status == StatusType::Normal {
                 log::trace!("Analyzing interesting test case: {}", id);

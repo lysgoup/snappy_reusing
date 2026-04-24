@@ -16,7 +16,7 @@ use std::{
     time::{self, Duration},
 };
 
-use crate::{bind_cpu, branches, check_dep, command, depot, executor, fuzz_loop, stats};
+use crate::{bind_cpu, branches, check_dep, command, depot, executor, fuzz_loop, fuzz_type::FuzzType, stats};
 use ctrlc;
 use libc;
 use pretty_env_logger;
@@ -35,6 +35,7 @@ pub fn fuzz_main(
     enable_afl: bool,
     enable_exploitation: bool,
     deterministic_seed: Option<u64>,
+    enable_analysis_log: bool,
 ) {
     pretty_env_logger::init();
 
@@ -50,6 +51,7 @@ pub fn fuzz_main(
         enable_afl,
         enable_exploitation,
         deterministic_seed,
+        enable_analysis_log,
     );
     log::info!("{:#?}", command_option);
 
@@ -118,10 +120,16 @@ pub fn fuzz_main(
         fuzz_thread_count,
     );
 
+    let mut all_logs: Vec<(usize, usize, FuzzType)> = Vec::new();
     for handle in handles {
-        if handle.join().is_err() {
-            error!("Error happened in fuzzing thread!");
+        match handle.join() {
+            Ok(log) => all_logs.extend(log),
+            Err(_) => error!("Error happened in fuzzing thread!"),
         }
+    }
+
+    if enable_analysis_log {
+        write_mutation_log(&angora_out_dir, &all_logs);
     }
 
     match fs::remove_file(&fuzzer_stats) {
@@ -153,6 +161,31 @@ fn initialize_directories(in_dir: &str, out_dir: &str, sync_afl: bool) -> (PathB
     };
 
     (seeds_dir, angora_out_dir)
+}
+
+fn write_mutation_log(out_dir: &PathBuf, logs: &[(usize, usize, FuzzType)]) {
+    use crate::fuzz_type::get_fuzz_type_name;
+    use std::io::Write;
+
+    let path = out_dir.join(defs::MUTATION_LOG_FILE);
+    let mut f = match fs::File::create(&path) {
+        Ok(f) => f,
+        Err(e) => {
+            error!("Could not create mutation log file: {:?}", e);
+            return;
+        },
+    };
+    writeln!(f, "child,parent,mutation").ok();
+    for (child, parent, fuzz_type) in logs {
+        writeln!(
+            f,
+            "id:{:06},id:{:06},{}",
+            child,
+            parent,
+            get_fuzz_type_name(fuzz_type.index())
+        ).ok();
+    }
+    log::warn!("Mutation log written to {:?} ({} entries)", path, logs.len());
 }
 
 fn gen_path_afl(out_dir: &str) -> PathBuf {
@@ -194,7 +227,7 @@ fn init_cpus_and_run_fuzzing_threads(
     global_branches: &Arc<branches::GlobalBranches>,
     depot: &Arc<depot::Depot>,
     stats: &Arc<RwLock<stats::ChartStats>>,
-) -> (Vec<thread::JoinHandle<()>>, Arc<AtomicUsize>) {
+) -> (Vec<thread::JoinHandle<Vec<(usize, usize, FuzzType)>>>, Arc<AtomicUsize>) {
     let free_cpus = bind_cpu::find_free_cpus(num_jobs);
     let bind_cpus = if free_cpus.len() < num_jobs {
         log::warn!("The number of free cpus is less than the number of jobs. Will not bind any thread to any cpu.");
@@ -230,7 +263,7 @@ fn init_cpus_and_run_fuzzing_threads(
                 bind_cpu::bind_thread_to_cpu_core(cid);
             }
 
-            fuzz_loop::fuzz_loop(
+            let log = fuzz_loop::fuzz_loop(
                 running,
                 command_option,
                 depot,
@@ -240,6 +273,7 @@ fn init_cpus_and_run_fuzzing_threads(
             );
 
             fuzz_thread_count.fetch_sub(1, Ordering::SeqCst);
+            log
         });
 
         fuzz_thread_handles.push(handle);

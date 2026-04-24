@@ -15,7 +15,7 @@ pub fn fuzz_loop<R: Rng + ?Sized>(
     global_branches: Arc<GlobalBranches>,
     global_stats: Arc<RwLock<stats::ChartStats>>,
     rng: &mut R,
-) {
+) -> Vec<(usize, usize, FuzzType)> {
     let search_method = cmd_opt.search_method;
     let mut executor = Executor::new(
         cmd_opt,
@@ -68,6 +68,9 @@ pub fn fuzz_loop<R: Rng + ?Sized>(
 
         {
             let fuzz_type = cond.get_fuzz_type();
+            // Track the parent input and fuzz type for analysis logging in do_if_has_new.
+            executor.current_parent_id = belong_input;
+            executor.current_fuzz_type = fuzz_type;
             let handler = SearchHandler::new(running.clone(), &mut executor, &mut cond, buf);
             match fuzz_type {
                 FuzzType::ExploreFuzz => {
@@ -121,4 +124,6 @@ pub fn fuzz_loop<R: Rng + ?Sized>(
 
         depot.update_entry(cond);
     }
+
+    executor.analysis_log
 }
