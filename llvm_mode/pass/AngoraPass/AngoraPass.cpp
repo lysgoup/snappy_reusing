@@ -19,6 +19,7 @@
 #include "llvm/Transforms/Utils/BasicBlockUtils.h"
 #include <fstream>
 #include <random>
+#include <vector>
 
 #include "abilist.h"
 #include "defs.h"
@@ -124,6 +125,16 @@ public:
   // Meta
   unsigned NoSanMetaId;
   MDTuple *NoneMetaNode;
+
+  // Output file for cmpid → source location mapping (JSON Lines format).
+  // Written only when ANGORA_PASS_LOG_DIR is set.
+  std::ofstream LogFile;
+
+  // Records instrumented constraint metadata (cmpid, source location, type,
+  // size, predicate, switch cases) as a JSON line in LogFile.
+  void logConstraint(uint32_t Cid, Instruction *Inst, StringRef Type,
+                     int Size = 0, uint32_t Predicate = 0,
+                     const std::vector<int64_t> &Cases = {});
 
   AngoraLLVMPass()
       : ModulePass(ID), ContextIdDistrib(0, MAP_SIZE),
@@ -580,7 +591,10 @@ void AngoraLLVMPass::visitCompareFunc(CallBase *Inst) {
   if (!isa<CallInst>(Inst) || !ExploitList.isIn(*Inst, CompareFuncCat)) {
     return;
   }
-  ConstantInt *Cid = ConstantInt::get(Int32Ty, getInstructionId(Inst));
+  uint32_t Id = getInstructionId(Inst);
+  ConstantInt *Cid = ConstantInt::get(Int32Ty, Id);
+  // Log compare-function constraint (e.g. strcmp, memcmp).
+  logConstraint(Id, Inst, "fn");
 
   if (!TrackMode)
     return;
@@ -754,7 +768,18 @@ void AngoraLLVMPass::visitCmpInst(CmpInst *CI) {
   Instruction *InsertPoint = CI->getNextNode();
   if (!InsertPoint || isa<ConstantInt>(CI))
     return;
-  Constant *Cid = ConstantInt::get(Int32Ty, getInstructionId(CI));
+  uint32_t Id = getInstructionId(CI);
+  Constant *Cid = ConstantInt::get(Int32Ty, Id);
+
+  // Log cmp constraint: capture operand size and predicate (with sign bit).
+  Type *OpType = CI->getOperand(0)->getType();
+  int NumBytes = OpType->getScalarSizeInBits() / 8;
+  if (OpType->isPointerTy()) NumBytes = 8;
+  uint32_t Predicate = CI->getPredicate();
+  if (auto *CInt = dyn_cast<ConstantInt>(CI->getOperand(1)))
+    if (CInt->isNegative()) Predicate |= COND_SIGN_MASK;
+  logConstraint(Id, CI, "cmp", NumBytes, Predicate);
+
   processCmp(CI, Cid, InsertPoint);
 }
 
@@ -764,7 +789,10 @@ void AngoraLLVMPass::visitBranchInst(BranchInst *Br) {
     if (Cond && Cond->getType()->isIntegerTy() && !isa<ConstantInt>(Cond)) {
       if (!isa<CmpInst>(Cond)) {
         // From  and, or, call, phi ....
-        Constant *Cid = ConstantInt::get(Int32Ty, getInstructionId(Br));
+        uint32_t Id = getInstructionId(Br);
+        Constant *Cid = ConstantInt::get(Int32Ty, Id);
+        // Log bool branch: no size or predicate (bool is always 1-bit EQ).
+        logConstraint(Id, Br, "branch");
         processBoolCmp(Cond, Cid, Br);
       }
     }
@@ -784,7 +812,18 @@ void AngoraLLVMPass::visitSwitchInst(Module &M, SwitchInst *SI) {
   if (NumBytes == 0 || NumBits % 8 != 0)
     return;
 
-  Constant *Cid = ConstantInt::get(Int32Ty, getInstructionId(SI));
+  uint32_t Id = getInstructionId(SI);
+  Constant *Cid = ConstantInt::get(Int32Ty, Id);
+
+  // Log switch constraint: collect all case values for source-level analysis.
+  std::vector<int64_t> LogCases;
+  for (auto &Case : SI->cases()) {
+    auto *CV = Case.getCaseValue();
+    if (CV->getBitWidth() <= 64)
+      LogCases.push_back(CV->getSExtValue());
+  }
+  logConstraint(Id, SI, "switch", NumBytes, 0, LogCases);
+
   IRBuilder<> IRB(SI);
 
   if (FastMode) {
@@ -858,10 +897,14 @@ void AngoraLLVMPass::visitExploitation(Instruction *Inst) {
       Type *ParamType = ParamVal->getType();
       if (ParamType->isIntegerTy() || ParamType->isPointerTy()) {
         if (!isa<ConstantInt>(ParamVal)) {
-          ConstantInt *Cid = ConstantInt::get(Int32Ty, getInstructionId(Inst));
-          int Size = ParamVal->getType()->getScalarSizeInBits() / 8;
+          // Compute size before getInstructionId so it can be logged together.
+          int Size = ParamType->getScalarSizeInBits() / 8;
+          if (ParamType->isPointerTy()) Size = 8;
+          uint32_t ExId = getInstructionId(Inst);
+          ConstantInt *Cid = ConstantInt::get(Int32Ty, ExId);
+          // Log exploit constraint: records the sensitive operand's size.
+          logConstraint(ExId, Inst, "exploit", Size);
           if (ParamType->isPointerTy()) {
-            Size = 8;
             ParamVal = IRB.CreatePtrToInt(ParamVal, Int64Ty);
           } else if (!ParamType->isIntegerTy(64)) {
             ParamVal = IRB.CreateZExt(ParamVal, Int64Ty);
@@ -881,6 +924,69 @@ void AngoraLLVMPass::visitExploitation(Instruction *Inst) {
   }
 }
 
+// Appends a JSON record mapping a cmpid to its source location and type to the
+// log file (cmpid_log_fast.json or cmpid_log_track.json) in ANGORA_PASS_LOG_DIR.
+void AngoraLLVMPass::logConstraint(uint32_t Cid, Instruction *Inst,
+                                   StringRef Type, int Size, uint32_t Predicate,
+                                   const std::vector<int64_t> &Cases) {
+  if (!LogFile.is_open())
+    return;
+
+  // Extract source location from debug info; fall back to "unknown" if absent.
+  std::string File = "unknown";
+  unsigned Line = 0, Col = 0;
+  if (DILocation *Loc = Inst->getDebugLoc()) {
+    File = Loc->getFilename().str();
+    Line = Loc->getLine();
+    Col = Loc->getColumn();
+  }
+
+  std::string FuncName = "unknown";
+  if (Function *F = Inst->getFunction())
+    FuncName = F->getName().str();
+
+  // Minimal JSON string escaping (quotes and backslashes only).
+  auto escapeJson = [](const std::string &S) {
+    std::string R;
+    for (char C : S) {
+      if (C == '"') R += "\\\"";
+      else if (C == '\\') R += "\\\\";
+      else R += C;
+    }
+    return R;
+  };
+
+  LogFile << "{\"cmpid\":" << Cid
+          << ",\"file\":\"" << escapeJson(File) << "\""
+          << ",\"function\":\"" << escapeJson(FuncName) << "\""
+          << ",\"line\":" << Line
+          << ",\"col\":" << Col
+          << ",\"type\":\"" << Type.str() << "\"";
+
+  if (Size > 0)
+    LogFile << ",\"size\":" << Size;
+  if (Predicate > 0)
+    LogFile << ",\"predicate\":" << Predicate;
+  if (!Cases.empty()) {
+    LogFile << ",\"cases\":[";
+    for (size_t I = 0; I < Cases.size(); ++I) {
+      if (I > 0) LogFile << ",";
+      LogFile << Cases[I];
+    }
+    LogFile << "]";
+  }
+
+  LogFile << "}\n";
+  LogFile.flush();
+
+  // Print the path of the log file after each successful write for traceability.
+  {
+    const char *LogDir = getenv("ANGORA_PASS_LOG_DIR");
+    errs() << "[AngoraPass] Wrote to: " << (LogDir ? LogDir : "?") << "/"
+           << (FastMode ? "cmpid_log_fast.json" : "cmpid_log_track.json") << "\n";
+  }
+}
+
 bool AngoraLLVMPass::runOnModule(Module &M) {
   if (TrackMode) {
     LLVM_DEBUG(dbgs() << "Track Mode.\n");
@@ -895,6 +1001,15 @@ bool AngoraLLVMPass::runOnModule(Module &M) {
 
   if (DFSanMode)
     return true;
+
+  // Open the constraint log file if ANGORA_PASS_LOG_DIR is set.
+  // Appends to allow multiple translation units to contribute to the same file.
+  char *LogDir = getenv("ANGORA_PASS_LOG_DIR");
+  if (LogDir) {
+    std::string LogFileName = std::string(LogDir) + "/" +
+                              (FastMode ? "cmpid_log_fast.json" : "cmpid_log_track.json");
+    LogFile.open(LogFileName, std::ios::app);
+  }
 
   for (auto &F : M) {
     if (F.isDeclaration() || F.getName().startswith(StringRef("asan.module")))
@@ -944,6 +1059,10 @@ bool AngoraLLVMPass::runOnModule(Module &M) {
   if (IsBitcode)
     LLVM_DEBUG(dbgs() << "Max constraint id is " << SerialInstIDCounter
                       << "\n");
+
+  // Flush and close the log file after all functions in this module are processed.
+  if (LogFile.is_open())
+    LogFile.close();
 
   return true;
 }
