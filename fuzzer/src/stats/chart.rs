@@ -151,6 +151,10 @@ impl ChartStats {
         )
     }
 
+    pub fn elapsed_secs(&self) -> u64 {
+        self.init_time.0.elapsed().as_secs()
+    }
+
     pub fn get_explore_num(&self) -> usize {
         self.fuzz
             .get(fuzz_type::FuzzType::ExploreFuzz.index())

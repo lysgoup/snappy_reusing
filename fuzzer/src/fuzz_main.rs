@@ -85,6 +85,11 @@ pub fn fuzz_main(
         panic!();
     }
 
+    depot.dirs.write_signal(
+        "dryrun_finish",
+        &format!("{}s", stats.read().unwrap().elapsed_secs()),
+    );
+
     let (handles, fuzz_thread_count) = init_cpus_and_run_fuzzing_threads(
         num_jobs,
         &running,
