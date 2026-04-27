@@ -10,38 +10,58 @@ use std::{
     },
 };
 
-pub fn sync_depot(executor: &mut Executor, running: Arc<AtomicBool>, dir: &Path) {
+/// Returns (forced_inputs, discarded_too_long).
+pub fn sync_depot(executor: &mut Executor, running: Arc<AtomicBool>, dir: &Path) -> (usize, usize) {
     executor.local_stats.clear();
 
-    let dir_iter = dir.read_dir().expect("read_dir call failed");
-    for dir_entry in dir_iter {
+    let mut entries: Vec<_> = dir
+        .read_dir()
+        .expect("read_dir call failed")
+        .filter_map(|e| e.ok())
+        .filter(|e| e.path().is_file())
+        .collect();
+    entries.sort_by_key(|e| e.file_name());
+
+    let mut forced_inputs = 0usize;
+    let mut discarded_too_long = 0usize;
+
+    for dir_entry in entries {
         if !running.load(Ordering::SeqCst) {
             break;
         }
 
-        if let Ok(dir_entry) = dir_entry {
-            let entry_path = dir_entry.path();
-            if entry_path.is_file() {
-                let file_len = dir_entry
-                    .metadata()
-                    .expect("Could not fetch metadata.")
-                    .len() as usize;
+        let entry_path = dir_entry.path();
+        let file_name = entry_path.file_name().unwrap_or_default().to_owned();
+        let file_len = dir_entry
+            .metadata()
+            .expect("Could not fetch metadata.")
+            .len() as usize;
 
-                if file_len < config::MAX_INPUT_LEN {
-                    let buf = read_from_file(&entry_path);
-                    executor.run_sync(&buf);
-                } else {
-                    log::warn!("Seed discarded, too long: {:?}", entry_path);
-                }
+        log::warn!("Processing seed {:?} (len={})", file_name, file_len);
+
+        if file_len < config::MAX_INPUT_LEN {
+            let buf = read_from_file(&entry_path);
+            if !executor.run_sync(&buf) {
+                log::warn!("Seed {:?}: no new coverage, force-tracking", file_name);
+                let id = executor.save_input(&buf);
+                executor.track_forced(id, &buf);
+                forced_inputs += 1;
+            } else {
+                log::warn!("Seed {:?}: new coverage found", file_name);
             }
+        } else {
+            log::warn!("Seed {:?}: discarded, too long (len={} >= {})", file_name, file_len, config::MAX_INPUT_LEN);
+            discarded_too_long += 1;
         }
     }
 
-    log::info!(
-        "Synced {} files from seeds.",
-        executor.local_stats.num_inputs
+    log::warn!(
+        "Dryrun done: {} seeds found new coverage, {} seeds force-tracked (no new coverage).",
+        executor.local_stats.num_inputs,
+        forced_inputs,
     );
     executor.update_log();
+    (forced_inputs, discarded_too_long)
 }
 
 // Now we are in a sub-dir of AFL's output dir

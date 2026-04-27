@@ -46,8 +46,13 @@ pub struct Executor {
     pub current_parent_id: usize,
     pub current_fuzz_type: FuzzType,
     // Records (child_id, parent_id, fuzz_type) for each new normal input saved.
-    // Populated only when enable_analysis_log is set. Flushed to file by the caller.
+    // Populated only when analysis_mode is set. Flushed to file by the caller.
     pub analysis_log: Vec<(usize, usize, FuzzType)>,
+    pub track_skipped_speed: usize,
+    pub track_skipped_memory: usize,
+    pub track_failed_crash_hang: usize,
+    pub track_failed_parse: usize,
+    pub track_no_tainted_conds: usize,
 }
 
 impl Executor {
@@ -112,6 +117,11 @@ impl Executor {
             current_parent_id: 0,
             current_fuzz_type: FuzzType::default(),
             analysis_log: Vec::new(),
+            track_skipped_speed: 0,
+            track_skipped_memory: 0,
+            track_failed_crash_hang: 0,
+            track_failed_parse: 0,
+            track_no_tainted_conds: 0,
         }
     }
 
@@ -255,7 +265,7 @@ impl Executor {
             let id = self.depot.save(status, &buf, cmpid);
 
             // Record lineage info when analysis logging is enabled.
-            if self.cmd.enable_analysis_log && status == StatusType::Normal {
+            if self.cmd.analysis_mode && status == StatusType::Normal {
                 self.analysis_log.push((id, self.current_parent_id, self.current_fuzz_type));
             }
 
@@ -280,28 +290,41 @@ impl Executor {
                         speed_ratio,
                         has_new_coverage
                     );
+                    self.track_skipped_speed += 1;
                     return;
                 }
 
                 let crash_or_tmout = self.try_unlimited_memory(buf, cmpid);
                 if !crash_or_tmout {
                     log::trace!("Analyzing test case with track instrumentation: {}", id);
-                    let cond_stmts = self.track(id, buf, speed);
-                    log::debug!(
-                        "Track analysis encountered {} conditions.",
-                        cond_stmts.len()
-                    );
-                    if cond_stmts.len() > 0 {
-                        self.depot.add_entries(cond_stmts);
-                        if self.cmd.enable_afl {
-                            self.depot
-                                .add_entries(vec![cond_stmt::CondStmt::get_afl_cond(
-                                    id,
-                                    speed,
-                                    edge_num.unwrap(),
-                                )]);
-                        }
+                    match self.track(id, buf, speed) {
+                        Ok(cond_stmts) => {
+                            log::debug!(
+                                "Track analysis encountered {} conditions.",
+                                cond_stmts.len()
+                            );
+                            self.depot.add_entries(cond_stmts);
+                            if self.cmd.enable_afl {
+                                self.depot
+                                    .add_entries(vec![cond_stmt::CondStmt::get_afl_cond(
+                                        id,
+                                        speed,
+                                        edge_num.unwrap(),
+                                    )]);
+                            }
+                        },
+                        Err(track::TrackFailReason::CrashOrHang) => {
+                            self.track_failed_crash_hang += 1;
+                        },
+                        Err(track::TrackFailReason::ParseError) => {
+                            self.track_failed_parse += 1;
+                        },
+                        Err(track::TrackFailReason::NoTaintedConds) => {
+                            self.track_no_tainted_conds += 1;
+                        },
                     }
+                } else {
+                    self.track_skipped_memory += 1;
                 }
             }
         }
@@ -318,10 +341,62 @@ impl Executor {
     /// Run test case in `buf`. Update internal state according to findings. This
     /// function is used when no related condition is available (e.g. when
     /// importing test cases from other fuzzers).
-    pub fn run_sync(&mut self, buf: &Vec<u8>) {
+    pub fn run_sync(&mut self, buf: &Vec<u8>) -> bool {
         self.run_init();
         let status = self.run_inner(buf);
         self.do_if_has_new(buf, status, false, 0);
+        self.has_new_path
+    }
+
+    pub fn save_input(&self, buf: &Vec<u8>) -> usize {
+        self.depot.save(StatusType::Normal, buf, 0)
+    }
+
+    pub fn track_forced(&mut self, id: usize, buf: &Vec<u8>) {
+        let speed = self.count_time();
+        let speed_ratio = self.local_stats.avg_exec_time.get_ratio(speed as f32);
+        self.local_stats.avg_exec_time.update(speed as f32);
+
+        if speed_ratio > 10 && id > 10 {
+            log::warn!(
+                "Skip forced tracking id {}, speed: {}, speed_ratio: {}",
+                id,
+                speed,
+                speed_ratio
+            );
+            self.track_skipped_speed += 1;
+            return;
+        }
+
+        match self.track(id, buf, speed) {
+            Ok(cond_stmts) => {
+                log::warn!(
+                    "Forced tracking id {}: success ({} conditions)",
+                    id,
+                    cond_stmts.len()
+                );
+                self.depot.add_entries(cond_stmts);
+                if self.cmd.enable_afl {
+                    self.depot.add_entries(vec![cond_stmt::CondStmt::get_afl_cond(
+                        id,
+                        speed,
+                        0,
+                    )]);
+                }
+            },
+            Err(track::TrackFailReason::CrashOrHang) => {
+                log::warn!("Forced tracking id {}: crash or hang", id);
+                self.track_failed_crash_hang += 1;
+            },
+            Err(track::TrackFailReason::ParseError) => {
+                log::warn!("Forced tracking id {}: parse error", id);
+                self.track_failed_parse += 1;
+            },
+            Err(track::TrackFailReason::NoTaintedConds) => {
+                log::warn!("Forced tracking id {}: no tainted conditions", id);
+                self.track_no_tainted_conds += 1;
+            },
+        }
     }
 
     fn run_init(&mut self) {
@@ -392,7 +467,7 @@ impl Executor {
     /// Run DFSan tracing binary on test case with ID `id` and content in `buf`.
     /// `speed` contains the time it takes to run this test case using the fork
     /// server.
-    fn track(&mut self, id: usize, buf: &Vec<u8>, speed: u32) -> Vec<cond_stmt::CondStmt> {
+    fn track(&mut self, id: usize, buf: &Vec<u8>, speed: u32) -> Result<Vec<cond_stmt::CondStmt>, track::TrackFailReason> {
         self.envs.insert(
             OsString::from(defs::TRACK_OUTPUT_VAR),
             self.cmd.track_path.clone().into(),
@@ -421,10 +496,10 @@ impl Executor {
                 "Crash or hang while tracking! -- {:?},  id: {}",
                 ret_status, id
             );
-            return vec![];
+            return Err(track::TrackFailReason::CrashOrHang);
         }
 
-        let cond_list = track::load_track_data(
+        let result = track::load_track_data(
             Path::new(&self.cmd.track_path),
             id as u32,
             speed,
@@ -433,7 +508,7 @@ impl Executor {
         );
 
         self.local_stats.track_time += t_now.elapsed();
-        cond_list
+        result
     }
 
     /// Get a random test case from storage.

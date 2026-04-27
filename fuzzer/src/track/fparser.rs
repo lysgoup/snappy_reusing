@@ -6,6 +6,13 @@ use crate::{
 use angora_common::{defs, log_data::get_log_data, tag::TagSeg};
 use std::{collections::HashMap, io, path::Path};
 
+#[derive(Debug)]
+pub enum TrackFailReason {
+    CrashOrHang,
+    ParseError,
+    NoTaintedConds,
+}
+
 pub fn read_and_parse(
     out_f: &Path,
     is_pin_mode: bool,
@@ -78,14 +85,18 @@ pub fn load_track_data(
     speed: u32,
     is_pin_mode: bool,
     enable_exploitation: bool,
-) -> Vec<CondStmt> {
+) -> Result<Vec<CondStmt>, TrackFailReason> {
     let mut cond_list = match read_and_parse(out_f, is_pin_mode, enable_exploitation) {
         Result::Ok(val) => val,
         Result::Err(err) => {
             error!("parse track file error!! {:?}", err);
-            vec![]
+            return Err(TrackFailReason::ParseError);
         },
     };
+
+    if cond_list.is_empty() {
+        return Err(TrackFailReason::NoTaintedConds);
+    }
 
     for cond in cond_list.iter_mut() {
         cond.base.belong = id;
@@ -97,5 +108,5 @@ pub fn load_track_data(
 
     filter::filter_cond_list(&mut cond_list);
 
-    cond_list
+    Ok(cond_list)
 }

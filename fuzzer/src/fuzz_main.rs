@@ -35,7 +35,8 @@ pub fn fuzz_main(
     enable_afl: bool,
     enable_exploitation: bool,
     deterministic_seed: Option<u64>,
-    enable_analysis_log: bool,
+    analysis_mode: bool,
+    only_dryrun: bool,
 ) {
     pretty_env_logger::init();
 
@@ -51,7 +52,7 @@ pub fn fuzz_main(
         enable_afl,
         enable_exploitation,
         deterministic_seed,
-        enable_analysis_log,
+        analysis_mode,
     );
     log::info!("{:#?}", command_option);
 
@@ -75,7 +76,7 @@ pub fn fuzz_main(
     );
 
     log::trace!("Processing seed test cases");
-    depot::sync_depot(&mut executor, running.clone(), &depot.dirs.seeds_dir);
+    let (forced_inputs, discarded_too_long) = depot::sync_depot(&mut executor, running.clone(), &depot.dirs.seeds_dir);
 
     if depot.empty() {
         error!("Failed to find any branches during dry run.");
@@ -91,6 +92,26 @@ pub fn fuzz_main(
         "dryrun_finish",
         &format!("{}s", stats.read().unwrap().elapsed_secs()),
     );
+
+    write_dryrun_log(
+        &angora_out_dir,
+        executor.local_stats.num_inputs.into(),
+        forced_inputs,
+        discarded_too_long,
+        executor.track_skipped_speed,
+        executor.track_skipped_memory,
+        executor.track_failed_crash_hang,
+        executor.track_failed_parse,
+        executor.track_no_tainted_conds,
+    );
+
+    if only_dryrun {
+        match fs::remove_file(&fuzzer_stats) {
+            Ok(_) => (),
+            Err(e) => warn!("Could not remove fuzzer stats file: {:?}", e),
+        };
+        return;
+    }
 
     let (handles, fuzz_thread_count) = init_cpus_and_run_fuzzing_threads(
         num_jobs,
@@ -128,7 +149,7 @@ pub fn fuzz_main(
         }
     }
 
-    if enable_analysis_log {
+    if analysis_mode {
         write_mutation_log(&angora_out_dir, &all_logs);
     }
 
@@ -161,6 +182,37 @@ fn initialize_directories(in_dir: &str, out_dir: &str, sync_afl: bool) -> (PathB
     };
 
     (seeds_dir, angora_out_dir)
+}
+
+fn write_dryrun_log(
+    out_dir: &PathBuf,
+    coverage_inputs: usize,
+    forced_inputs: usize,
+    discarded_too_long: usize,
+    track_skipped_speed: usize,
+    track_skipped_memory: usize,
+    track_failed_crash_hang: usize,
+    track_failed_parse: usize,
+    track_no_tainted_conds: usize,
+) {
+    use std::io::Write;
+
+    let path = out_dir.join(defs::DRYRUN_LOG_FILE);
+    let mut f = match fs::File::create(&path) {
+        Ok(f) => f,
+        Err(e) => {
+            error!("Could not create dryrun log file: {:?}", e);
+            return;
+        },
+    };
+    writeln!(f, "coverage_inputs: {}", coverage_inputs).ok();
+    writeln!(f, "forced_inputs: {}", forced_inputs).ok();
+    writeln!(f, "discarded_too_long: {}", discarded_too_long).ok();
+    writeln!(f, "track_skipped_speed: {}", track_skipped_speed).ok();
+    writeln!(f, "track_skipped_memory: {}", track_skipped_memory).ok();
+    writeln!(f, "track_failed_crash_hang: {}", track_failed_crash_hang).ok();
+    writeln!(f, "track_failed_parse: {}", track_failed_parse).ok();
+    writeln!(f, "track_no_tainted_conds: {}", track_no_tainted_conds).ok();
 }
 
 fn write_mutation_log(out_dir: &PathBuf, logs: &[(usize, usize, FuzzType)]) {

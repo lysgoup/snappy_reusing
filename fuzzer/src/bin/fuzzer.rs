@@ -83,9 +83,12 @@ fn main() {
              .long("deterministic-seed")
              .help("Random seed that makes the fuzzing run fully deterministic")
              .takes_value(true))
-        .arg(Arg::with_name("enable_analysis_log")
-             .long("enable-analysis-log")
+        .arg(Arg::with_name("analysis_mode")
+             .long("analysis-mode")
              .help("Log parent/child input names and mutation type for each new input saved to depot"))
+        .arg(Arg::with_name("only_dryrun")
+             .long("only-dryrun")
+             .help("Exit immediately after the dryrun phase without starting fuzzing threads"))
        .get_matches();
 
     fuzz_main(
@@ -102,6 +105,7 @@ fn main() {
         matches.occurrences_of("disable_afl_mutation") == 0,
         matches.occurrences_of("disable_exploitation") == 0,
         value_t!(matches, "deterministic_seed", u64).ok(),
-        matches.occurrences_of("enable_analysis_log") > 0,
+        matches.occurrences_of("analysis_mode") > 0,
+        matches.occurrences_of("only_dryrun") > 0,
     );
 }
