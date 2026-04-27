@@ -9,6 +9,9 @@ pub struct CondStmt {
     pub base: CondStmtBase,
     pub offsets: Vec<TagSeg>,
     pub offsets_opt: Vec<TagSeg>,
+    pub reuse_offsets: Vec<TagSeg>,
+    pub reuse_offsets_opt: Vec<TagSeg>,
+    pub reuse_merged_offsets: Vec<TagSeg>,
     pub variables: Vec<u8>,
 
     pub speed: u32,
@@ -18,6 +21,9 @@ pub struct CondStmt {
     pub state: CondState,
     pub num_minimal_optima: usize,
     pub linear: bool,
+    pub reuse_cursor: usize,
+    pub reuse_cursor_opt: usize,
+    pub reuse_cursor_merged: usize,
 }
 
 impl PartialEq for CondStmt {
@@ -43,6 +49,9 @@ impl CondStmt {
             base: cond_base,
             offsets: vec![],
             offsets_opt: vec![],
+            reuse_offsets: vec![],
+            reuse_offsets_opt: vec![],
+            reuse_merged_offsets: vec![],
             variables: vec![],
             speed: 0,
             is_consistent: true,
@@ -51,6 +60,9 @@ impl CondStmt {
             state: CondState::default(),
             num_minimal_optima: 0,
             linear: false,
+            reuse_cursor: 0,
+            reuse_cursor_opt: 0,
+            reuse_cursor_merged: 0,
         }
     }
 

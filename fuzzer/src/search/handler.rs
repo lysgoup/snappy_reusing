@@ -1,5 +1,6 @@
 use super::*;
 use crate::stats::Counter;
+use angora_common::tag::TagSeg;
 
 /// This is a facade object used by mutation operators in order to run new
 /// mutated test cases. The mutations are based on a target condition and a test
@@ -73,6 +74,19 @@ impl<'a> SearchHandler<'a> {
         input.write_to_input(&self.cond.offsets, &mut self.buf);
         let status = self.executor.run(&self.buf, self.cond);
         self.process_status(status);
+    }
+
+    /// Execute test case after applying mutations in `input` at the given offsets, ignoring Skip status.
+    /// Used by reusing to continue trying other pool entries even if cond is not reached.
+    pub fn execute_input_at_ignore_skip(&mut self, input: &MutInput, offsets: &Vec<TagSeg>) {
+        input.write_to_input(offsets, &mut self.buf);
+        self.executor.run(&self.buf, self.cond);
+        if self.executor.has_new_path {
+            self.max_times += config::BONUS_EXEC_NUM.into();
+        }
+        if self.executor.local_stats.num_exec > self.max_times {
+            self.skip = true;
+        }
     }
 
     /// Execute test case after applying mutations in `input`.

@@ -44,3 +44,5 @@ pub mod det;
 pub use self::det::DetFuzz;
 pub mod one_byte;
 pub use self::one_byte::OneByteFuzz;
+pub mod reusing;
+pub use self::reusing::{ReuseTarget, ReusingFuzz};

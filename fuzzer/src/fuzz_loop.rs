@@ -64,12 +64,13 @@ pub fn fuzz_loop<R: Rng + ?Sized>(
         }
         */
 
+        executor.current_parent_id = belong_input;
+
         let buf = depot.get_input_buf(belong_input);
 
         {
             let fuzz_type = cond.get_fuzz_type();
             // Track the parent input and fuzz type for analysis logging in do_if_has_new.
-            executor.current_parent_id = belong_input;
             executor.current_fuzz_type = fuzz_type;
             let handler = SearchHandler::new(running.clone(), &mut executor, &mut cond, buf);
             match fuzz_type {
@@ -116,10 +117,37 @@ pub fn fuzz_loop<R: Rng + ?Sized>(
                 FuzzType::CmpFnFuzz => {
                     FnFuzz::new(handler).run();
                 },
-                FuzzType::OtherFuzz => {
+                FuzzType::OtherFuzz | FuzzType::ReusingFuzz => {
                     warn!("Unknown fuzz type!!");
                 },
             }
+        }
+
+        if !depot.reuse_pool.is_empty() {
+            let saved_fuzz_times = cond.fuzz_times;
+            let saved_state = cond.state.clone();
+            let saved_speed = cond.speed;
+            if !cond.reuse_offsets.is_empty() {
+                let buf2 = depot.get_input_buf(belong_input);
+                executor.current_fuzz_type = FuzzType::ReusingFuzz;
+                let handler = SearchHandler::new(running.clone(), &mut executor, &mut cond, buf2);
+                ReusingFuzz::new(handler).run(rng, ReuseTarget::Offsets);
+            }
+            if !cond.reuse_offsets_opt.is_empty() {
+                let buf2 = depot.get_input_buf(belong_input);
+                executor.current_fuzz_type = FuzzType::ReusingFuzz;
+                let handler = SearchHandler::new(running.clone(), &mut executor, &mut cond, buf2);
+                ReusingFuzz::new(handler).run(rng, ReuseTarget::OffsetsOpt);
+            }
+            if !cond.reuse_merged_offsets.is_empty() {
+                let buf2 = depot.get_input_buf(belong_input);
+                executor.current_fuzz_type = FuzzType::ReusingFuzz;
+                let handler = SearchHandler::new(running.clone(), &mut executor, &mut cond, buf2);
+                ReusingFuzz::new(handler).run(rng, ReuseTarget::MergedOffsets);
+            }
+            cond.fuzz_times = saved_fuzz_times;
+            cond.state = saved_state;
+            cond.speed = saved_speed;
         }
 
         depot.update_entry(cond);
@@ -127,3 +155,4 @@ pub fn fuzz_loop<R: Rng + ?Sized>(
 
     executor.analysis_log
 }
+

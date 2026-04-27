@@ -21,6 +21,7 @@ pub struct Depot {
     pub num_hangs: AtomicUsize,
     pub num_crashes: AtomicUsize,
     pub dirs: DepotDir,
+    pub reuse_pool: ReusePool,
 }
 
 impl Depot {
@@ -31,6 +32,7 @@ impl Depot {
             num_hangs: AtomicUsize::new(0),
             num_crashes: AtomicUsize::new(0),
             dirs: DepotDir::new(in_dir, out_dir),
+            reuse_pool: ReusePool::new(),
         }
     }
 
@@ -107,7 +109,7 @@ impl Depot {
             })
     }
 
-    pub fn add_entries(&self, conds: Vec<CondStmt>) {
+    pub fn add_entries(&self, conds: Vec<CondStmt>) -> Vec<CondStmt> {
         let mut q = match self.queue.lock() {
             Ok(guard) => guard,
             Err(poisoned) => {
@@ -116,6 +118,7 @@ impl Depot {
             },
         };
 
+        let mut new_conds = Vec::new();
         for mut cond in conds {
             if cond.is_desirable {
                 if let Some(v) = q.get_mut(&cond) {
@@ -123,6 +126,7 @@ impl Depot {
                         // If existed one and our new one has two different conditions,
                         // this indicate that it is explored.
                         if v.0.base.condition != cond.base.condition {
+                            new_conds.push(cond.clone());
                             v.0.mark_as_done();
                             q.change_priority(&cond, QPriority::done());
                         } else {
@@ -144,10 +148,12 @@ impl Depot {
                     );
 
                     let priority = QPriority::init(cond.base.op);
+                    new_conds.push(cond.clone());
                     q.push(cond, priority);
                 }
             }
         }
+        new_conds
     }
 
     pub fn update_entry(&self, cond: CondStmt) {

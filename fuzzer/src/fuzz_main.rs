@@ -106,6 +106,7 @@ pub fn fuzz_main(
     );
 
     if only_dryrun {
+        depot.reuse_pool.dump(&angora_out_dir.join("reuse_pool.txt"));
         match fs::remove_file(&fuzzer_stats) {
             Ok(_) => (),
             Err(e) => warn!("Could not remove fuzzer stats file: {:?}", e),
@@ -152,6 +153,8 @@ pub fn fuzz_main(
     if analysis_mode {
         write_mutation_log(&angora_out_dir, &all_logs);
     }
+
+    depot.reuse_pool.dump(&angora_out_dir.join("reuse_pool.txt"));
 
     match fs::remove_file(&fuzzer_stats) {
         Ok(_) => (),

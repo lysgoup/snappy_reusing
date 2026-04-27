@@ -5,12 +5,13 @@ pub enum FuzzType {
     CmpFnFuzz,
     LenFuzz,
     AFLFuzz,
+    ReusingFuzz,
     OtherFuzz,
 }
 
 pub const FUZZ_TYPE_NUM: usize = FuzzType::OtherFuzz as usize + 1;
 static FUZZ_TYPE_NAME: [&str; FUZZ_TYPE_NUM] =
-    ["Explore", "Exploit", "CmpFn", "Len", "AFL", "Other"];
+    ["Explore", "Exploit", "CmpFn", "Len", "AFL", "Reusing", "Other"];
 
 impl Default for FuzzType {
     fn default() -> Self {

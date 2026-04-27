@@ -303,7 +303,8 @@ impl Executor {
                                 "Track analysis encountered {} conditions.",
                                 cond_stmts.len()
                             );
-                            self.depot.add_entries(cond_stmts);
+                            let new_conds = self.depot.add_entries(cond_stmts);
+                            self.depot.reuse_pool.add_from_conds(&new_conds, buf);
                             if self.cmd.enable_afl {
                                 self.depot
                                     .add_entries(vec![cond_stmt::CondStmt::get_afl_cond(
@@ -375,7 +376,8 @@ impl Executor {
                     id,
                     cond_stmts.len()
                 );
-                self.depot.add_entries(cond_stmts);
+                let new_conds = self.depot.add_entries(cond_stmts);
+                self.depot.reuse_pool.add_from_conds(&new_conds, buf);
                 if self.cmd.enable_afl {
                     self.depot.add_entries(vec![cond_stmt::CondStmt::get_afl_cond(
                         id,
@@ -509,6 +511,14 @@ impl Executor {
 
         self.local_stats.track_time += t_now.elapsed();
         result
+    }
+
+    pub fn get_reuse_at(&self, sizes: &[usize], index: usize) -> Option<Vec<u8>> {
+        self.depot.reuse_pool.get_at(sizes, index)
+    }
+
+    pub fn sample_reuse<R: Rng + ?Sized>(&self, sizes: &[usize], rng: &mut R) -> Option<Vec<u8>> {
+        self.depot.reuse_pool.sample(sizes, rng)
     }
 
     /// Get a random test case from storage.

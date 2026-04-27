@@ -1,5 +1,33 @@
 use angora_common::tag::TagSeg;
 
+/// Merges a list of TagSeg into a minimal set of non-overlapping, non-adjacent segments.
+/// Adjacent ([1,4],[4,6]) and overlapping ([1,3],[2,5]) segments are merged into one.
+pub fn union_merge(offsets: &[TagSeg]) -> Vec<TagSeg> {
+    if offsets.is_empty() {
+        return vec![];
+    }
+    let mut sorted = offsets.to_vec();
+    sorted.sort_by_key(|s| s.begin);
+    let mut result = vec![sorted[0]];
+    for seg in &sorted[1..] {
+        let last = result.last_mut().unwrap();
+        if seg.begin <= last.end {
+            if seg.end > last.end {
+                last.end = seg.end;
+            }
+        } else {
+            result.push(*seg);
+        }
+    }
+    result
+}
+
+/// Union-merges two TagSeg lists together into a minimal non-overlapping set.
+pub fn union_merge_two(v1: &[TagSeg], v2: &[TagSeg]) -> Vec<TagSeg> {
+    let combined: Vec<TagSeg> = v1.iter().chain(v2.iter()).copied().collect();
+    union_merge(&combined)
+}
+
 pub fn merge_offsets(v1: &Vec<TagSeg>, v2: &Vec<TagSeg>) -> Vec<TagSeg> {
     if v1.len() == 0 {
         return v2.clone();

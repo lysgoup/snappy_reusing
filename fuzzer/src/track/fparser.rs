@@ -2,6 +2,7 @@ use super::{filter, load_pin_data::get_log_data_pin};
 use crate::{
     cond_stmt::{CondState, CondStmt},
     mut_input,
+    mut_input::offsets::{union_merge, union_merge_two},
 };
 use angora_common::{defs, log_data::get_log_data, tag::TagSeg};
 use std::{collections::HashMap, io, path::Path};
@@ -76,6 +77,12 @@ fn get_offsets_and_variables(
         } else {
             mut_input::write_as_ule(cond.base.arg1, cond.base.size as usize)
         };
+    }
+
+    cond.reuse_offsets = union_merge(&cond.offsets);
+    cond.reuse_offsets_opt = union_merge(&cond.offsets_opt);
+    if !cond.offsets.is_empty() || !cond.offsets_opt.is_empty() {
+        cond.reuse_merged_offsets = union_merge_two(&cond.offsets, &cond.offsets_opt);
     }
 }
 
