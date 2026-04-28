@@ -66,7 +66,7 @@ impl<'a> ReusingFuzz<'a> {
         if matches!(target, ReuseTarget::Offsets | ReuseTarget::OffsetsOpt)
             && reuse_offsets.len() > 1
         {
-            loop {
+            for _ in 0..50 {
                 if self.handler.is_stopped_or_skip() {
                     break;
                 }
